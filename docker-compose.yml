@@ -5,13 +5,77 @@ services:
     image: mongo
     restart: always
     ports:
-      - 27017:27017
+      - "27017:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: example
+    logging:
+      driver: none
 
   rabbitmq:
     image: rabbitmq
     restart: always
     ports:
-      - 5672:5672
+      - "5672:5672"
+    logging:
+      driver: none
+
+  orchestrator:
+    build:
+      context: .
+      args:
+        service: "sagaorchestrator"
+    environment:
+      MQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      DB_URL: "mongodb://root:example@mongo:27017"
+    depends_on:
+      - rabbitmq
+      - mongo
+    links:
+      - rabbitmq
+      - mongo
+
+  profile:
+    build:
+      context: .
+      args:
+        service: "profile"
+    environment:
+      MQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      DB_URL: "mongodb://root:example@mongo:27017"
+    depends_on:
+      - rabbitmq
+      - mongo
+    links:
+      - rabbitmq
+      - mongo
+
+  vehicle:
+    build:
+      context: .
+      args:
+        service: "vehicle"
+    environment:
+      MQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      DB_URL: "mongodb://root:example@mongo:27017"
+    depends_on:
+      - rabbitmq
+      - mongo
+    links:
+      - rabbitmq
+      - mongo
+
+  policy:
+    build:
+      context: .
+      args:
+        service: "policy"
+    environment:
+      MQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      DB_URL: "mongodb://root:example@mongo:27017"
+    depends_on:
+      - rabbitmq
+      - mongo
+    links:
+      - rabbitmq
+      - mongo

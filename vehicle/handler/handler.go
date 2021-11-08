@@ -7,13 +7,11 @@ import (
 	"github.com/tgmendes/saga-go/rabbitmq"
 )
 
-type Command string
+type Transition string
 
 const (
-	UpdateCmd       Command = "update_vehicle"
-	UpdatedCmd      Command = "vehicle_updated"
-	UpdateFailedCmd Command = "vehicle_update_failed"
-	RollbackCmd     Command = "rollback_vehicle"
+	Next       Transition = "next"
+	Compensate Transition = "compensate"
 )
 
 type VehicleData struct {
@@ -22,9 +20,10 @@ type VehicleData struct {
 	VRM       string `json:"vrm"`
 }
 
-type Message struct {
-	Command Command     `json:"command"`
-	Payload VehicleData `json:"payload,omitempty"`
+type SagaMsg struct {
+	TransactionID string     `json:"transaction_id"`
+	Command       Transition `json:"command"`
+	Payload       []byte     `json:"payload"`
 }
 
 type Vehicle struct {
@@ -32,28 +31,57 @@ type Vehicle struct {
 }
 
 func NewVehicle(mqClient *rabbitmq.Client) Vehicle {
-	vp := Vehicle{
+	v := Vehicle{
 		mqClient: mqClient,
 	}
 
-	return vp
+	return v
 }
 
-func (vp Vehicle) Update(req []byte) {
-	var msg Message
+func (v Vehicle) Update(req []byte) {
+	var msg SagaMsg
 	if err := json.Unmarshal(req, &msg); err != nil {
 		log.Printf("some error")
 	}
 
-	if msg.Command == UpdateCmd {
-		log.Printf("updating vehicle with data: %+v\n", msg.Payload)
-		log.Printf("error: not implemented")
-		_ = vp.mqClient.Publish("reply", []byte(UpdateFailedCmd))
+	var payload VehicleData
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		v.handleError(msg.TransactionID, err)
+	}
+
+	if msg.Command == Next {
+		log.Printf("[TX_%s] updating vehicle with data: %+v\n", msg.TransactionID, payload)
+
+		replyMsg := SagaMsg{
+			TransactionID: msg.TransactionID,
+			Command:       Next,
+		}
+		replyMsgB, err := json.Marshal(replyMsg)
+		if err != nil {
+			log.Printf("error %s", err)
+		}
+		_ = v.mqClient.Publish("saga_reply", replyMsgB)
 		return
 	}
 
-	if msg.Command == RollbackCmd {
-		log.Printf("rolling back vehicle changes to previous state")
-		return
+	if msg.Command == Compensate {
+		log.Printf("[TX_%s] compensating vehicle\n", msg.TransactionID)
+		replyMsg := SagaMsg{
+			TransactionID: msg.TransactionID,
+			Command:       Compensate,
+		}
+		replyMsgB, err := json.Marshal(replyMsg)
+		if err != nil {
+			log.Printf("error %s", err)
+		}
+		_ = v.mqClient.Publish("saga_reply", replyMsgB)
 	}
+}
+
+func (v Vehicle) handleError(txID string, err error) {
+	log.Printf("[TX_%s] something happened: %s", txID, err)
+	msg := SagaMsg{TransactionID: txID, Command: Compensate}
+	msgB, _ := json.Marshal(msg)
+	_ = v.mqClient.Publish("saga_reply", msgB)
+
 }

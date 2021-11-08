@@ -3,6 +3,7 @@ package rabbitmq
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/streadway/amqp"
 )
@@ -13,10 +14,7 @@ type Client struct {
 }
 
 func NewClient(url string, queues []string) (*Client, error) {
-	conn, err := amqp.Dial(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
-	}
+	conn, err := dialConnection(url)
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -83,4 +81,23 @@ func (r *Client) Consume(queueName string, consumeFn func(body []byte)) error {
 	log.Printf(" [*] Waiting for messages. To exit press CTRL+C")
 	<-forever
 	return nil
+}
+
+func dialConnection(url string) (*amqp.Connection, error) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	timeoutExceeded := time.After(1 * time.Minute)
+	for {
+		select {
+		case <-timeoutExceeded:
+			return nil, fmt.Errorf("rabbit connection failed after 1 minute")
+
+		case <-ticker.C:
+			conn, err := amqp.Dial(url)
+			if err == nil {
+				return conn, nil
+			}
+		}
+	}
 }

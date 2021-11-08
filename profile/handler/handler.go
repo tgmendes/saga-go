@@ -1,22 +1,17 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"log"
-
-	"github.com/tgmendes/saga-go/profile/repo"
 
 	"github.com/tgmendes/saga-go/rabbitmq"
 )
 
-type Command string
+type Transition string
 
 const (
-	UpdateCmd       Command = "update_profile"
-	UpdatedCmd      Command = "profile_updated"
-	UpdateFailedCmd Command = "profile_update_failed"
-	RollbackCmd     Command = "rollback_profile"
+	Next       Transition = "next"
+	Compensate Transition = "compensate"
 )
 
 type ProfileData struct {
@@ -26,54 +21,69 @@ type ProfileData struct {
 	Occupation         string `json:"occupation"`
 }
 
-type Message struct {
-	Command Command     `json:"command"`
-	Payload ProfileData `json:"payload,omitempty"`
+type SagaMsg struct {
+	TransactionID string     `json:"transaction_id"`
+	Command       Transition `json:"command"`
+	Payload       []byte     `json:"payload"`
 }
 
-type Storer interface {
-	Update(ctx context.Context, userID string, profUpdate repo.ProfileUpdate) error
-	Rollback(ctx context.Context, userID string) error
-}
 type Profile struct {
 	mqClient *rabbitmq.Client
-	repo     Storer
 }
 
-func NewProfile(mqClient *rabbitmq.Client, repo Storer) Profile {
-	p := Profile{
+func NewProfile(mqClient *rabbitmq.Client) Profile {
+	v := Profile{
 		mqClient: mqClient,
-		repo:     repo,
 	}
 
-	return p
+	return v
 }
 
 func (p Profile) Update(req []byte) {
-	var msg Message
+	var msg SagaMsg
 	if err := json.Unmarshal(req, &msg); err != nil {
 		log.Printf("some error")
 	}
 
-	if msg.Command == UpdateCmd {
-		log.Printf("updating profile with data: %+v\n", msg.Payload)
-		profUpdate := repo.ProfileUpdate{
-			Surname:            msg.Payload.Surname,
-			ResidentialAddress: msg.Payload.ResidentialAddress,
-			Occupation:         msg.Payload.Occupation,
+	var payload ProfileData
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		p.handleError(msg.TransactionID, err)
+	}
+
+	if msg.Command == Next {
+		log.Printf("[TX_%s] updating profile with data: %+v\n", msg.TransactionID, payload)
+
+		replyMsg := SagaMsg{
+			TransactionID: msg.TransactionID,
+			Command:       Next,
 		}
-		err := p.repo.Update(context.Background(), msg.Payload.UserID, profUpdate)
+		replyMsgB, err := json.Marshal(replyMsg)
 		if err != nil {
-			log.Printf("error updating profile: %v", err)
-			_ = p.mqClient.Publish("reply", []byte(UpdateFailedCmd))
-			return
+			log.Printf("error %s", err)
 		}
-		_ = p.mqClient.Publish("reply", []byte(UpdatedCmd))
+		_ = p.mqClient.Publish("saga_reply", replyMsgB)
 		return
 	}
 
-	if msg.Command == RollbackCmd {
-		log.Printf("rolling back profile changes to previous state\n")
-		_ = p.repo.Rollback(context.Background(), msg.Payload.UserID)
+	if msg.Command == Compensate {
+		log.Printf("[TX_%s] compensating profile\n", payload)
+
+		replyMsg := SagaMsg{
+			TransactionID: msg.TransactionID,
+			Command:       Compensate,
+		}
+		replyMsgB, err := json.Marshal(replyMsg)
+		if err != nil {
+			log.Printf("error %s", err)
+		}
+		_ = p.mqClient.Publish("saga_reply", replyMsgB)
 	}
+}
+
+func (p Profile) handleError(txID string, err error) {
+	log.Printf("[TX_%s] something happened: %s", txID, err)
+	msg := SagaMsg{TransactionID: txID, Command: Compensate}
+	msgB, _ := json.Marshal(msg)
+	_ = p.mqClient.Publish("saga_reply", msgB)
+
 }

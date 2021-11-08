@@ -18,11 +18,12 @@ func main() {
 }
 
 func run() error {
-	declaredQueues := []string{"policy", "reply"}
-	mqClient, err := rabbitmq.NewClient(
-		"amqp://guest:guest@localhost:5672/",
-		declaredQueues,
-	)
+	declaredQueues := []string{"policy", "saga_reply"}
+	mqURL := os.Getenv("MQ_URL")
+	if mqURL == "" {
+		mqURL = "amqp://guest:guest@localhost:5672/"
+	}
+	mqClient, err := rabbitmq.NewClient(mqURL, declaredQueues)
 	if err != nil {
 		return fmt.Errorf("failed to start rabbitmq: %w", err)
 	}
